@@ -63,6 +63,33 @@ bay_samples[:, 1::2] = bay_samples[:, 1::2] / 300.0
 ref_bay = bay_samples.mean(axis=0).reshape(21, 2)
 print(f"   Reference from {len(bay_samples)} Bay samples")
 
+# ========== NORMALIZE REFERENCE SKELETON ==========
+# Scale down and center the reference so it fits nicely on screen
+ref_center_x = ref_bay[:, 0].mean()
+ref_center_y = ref_bay[:, 1].mean()
+
+# Center the landmarks
+ref_centered = ref_bay.copy()
+ref_centered[:, 0] -= ref_center_x
+ref_centered[:, 1] -= ref_center_y
+
+# Scale to a fixed size (0.15 of screen width/height)
+ref_scale = 0.15
+ref_max_range = max(ref_centered[:, 0].max() - ref_centered[:, 0].min(),
+                    ref_centered[:, 1].max() - ref_centered[:, 1].min())
+if ref_max_range > 0:
+    ref_centered *= (ref_scale / ref_max_range)
+
+# Position at a fixed location on screen (center-right area)
+ref_offset_x = 0.65  # 65% from left
+ref_offset_y = 0.40  # 40% from top
+
+ref_bay_normalized = ref_centered.copy()
+ref_bay_normalized[:, 0] += ref_offset_x
+ref_bay_normalized[:, 1] += ref_offset_y
+
+print(f"   Reference normalized to fixed size and position")
+
 # ========== MEDIAPIPE ==========
 print("\n🖐️ Starting MediaPipe...")
 mp_hands = mp.solutions.hands
@@ -91,14 +118,15 @@ cv2.resizeWindow('Bay Detection - Robust', 1100, 800)
 print("\n" + "="*60)
 print("🎯 BAY DETECTION")
 print("="*60)
-print("   GREEN dots = YOUR hand")
+print("   GREEN dots = YOUR hand (matches Bay)")
+print("   YELLOW dots = YOUR hand (different sign)")
 print("   WHITE skeleton = Reference Bay")
 print("   GREEN text = Bay detected!")
 print("")
 print("   How to sign Bay (ب):")
-print("   ✋ All fingers straight and together")
+print("   ✋ Four fingers straight and together")
+print("   👍 Thumb curved (tucked in)")
 print("   🖐️ Palm facing forward")
-print("   📐 Hand slightly tilted")
 print("")
 print("   Q=Quit  S=Save Screenshot")
 print("="*60 + "\n")
@@ -119,26 +147,44 @@ while True:
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     results = hands.process(frame_rgb)
     
+    # ===== DRAW REFERENCE BAY (ALWAYS VISIBLE, WHITE, SMALL) =====
+    ref_color = (255, 255, 255)
+    ref_alpha = 0.6  # slightly transparent
+    
+    # Create overlay for reference
+    overlay = frame.copy()
+    
+    for i, (rx, ry) in enumerate(ref_bay_normalized):
+        x = int(rx * w)
+        y = int(ry * h)
+        cv2.circle(overlay, (x, y), 4, ref_color, -1)
+        cv2.circle(overlay, (x, y), 6, ref_color, 1)
+    
+    # Reference connections (only main skeleton, not all connections)
+    # Simplified: connect wrist to each finger base, and finger joints
+    ref_connections = [
+        (0, 1), (1, 2), (2, 3), (3, 4),      # thumb
+        (0, 5), (5, 6), (6, 7), (7, 8),      # index
+        (5, 9), (9, 10), (10, 11), (11, 12),  # middle (from index base)
+        (9, 13), (13, 14), (14, 15), (15, 16), # ring
+        (13, 17), (17, 18), (18, 19), (19, 20), # pinky
+        (0, 17),                               # wrist to pinky base
+    ]
+    
+    for conn in ref_connections:
+        s_x = int(ref_bay_normalized[conn[0]][0] * w)
+        s_y = int(ref_bay_normalized[conn[0]][1] * h)
+        e_x = int(ref_bay_normalized[conn[1]][0] * w)
+        e_y = int(ref_bay_normalized[conn[1]][1] * h)
+        cv2.line(overlay, (s_x, s_y), (e_x, e_y), ref_color, 1)
+    
+    # Blend reference overlay
+    cv2.addWeighted(overlay, ref_alpha, frame, 1 - ref_alpha, 0, frame)
+    
     if results.multi_hand_landmarks:
         for hand_landmarks in results.multi_hand_landmarks:
             
-            # ===== DRAW REFERENCE BAY (WHITE) =====
-            for i, (rx, ry) in enumerate(ref_bay):
-                x = int(rx * w)
-                y = int(ry * h)
-                cv2.circle(frame, (x, y), 5, (255, 255, 255), -1)
-                cv2.circle(frame, (x, y), 7, (255, 255, 255), 1)
-            
-            # Reference connections
-            for conn in mp_hands.HAND_CONNECTIONS:
-                s_x = int(ref_bay[conn[0]][0] * w)
-                s_y = int(ref_bay[conn[0]][1] * h)
-                e_x = int(ref_bay[conn[1]][0] * w)
-                e_y = int(ref_bay[conn[1]][1] * h)
-                cv2.line(frame, (s_x, s_y), (e_x, e_y), (255, 255, 255), 1)
-            
-            # ===== DRAW YOUR HAND (GREEN if Bay, Yellow if not) =====
-            # First predict to determine color
+            # ===== PREDICT =====
             features = []
             for lm in hand_landmarks.landmark:
                 features.extend([lm.x, lm.y])
@@ -156,8 +202,8 @@ while True:
             is_bay = smooth_pred > 0.5
             confidence = smooth_pred if is_bay else (1 - smooth_pred)
             
-            # Hand color based on prediction
-            hand_color = (0, 255, 0) if is_bay else (0, 255, 255)  # Green if Bay, Yellow if not
+            # ===== DRAW YOUR HAND =====
+            hand_color = (0, 255, 0) if is_bay else (0, 255, 255)
             hand_outline = (0, 200, 0) if is_bay else (0, 200, 200)
             
             for lm in hand_landmarks.landmark:
@@ -228,11 +274,6 @@ while True:
         cv2.rectangle(frame, (0, 0), (w, 70), (0, 0, 0), -1)
         cv2.putText(frame, "Show your hand to camera", (20, 40),
                   cv2.FONT_HERSHEY_SIMPLEX, 0.9, (200, 200, 200), 2)
-        
-        # Show reference in gray
-        for i, (rx, ry) in enumerate(ref_bay):
-            x, y = int(rx * w), int(ry * h)
-            cv2.circle(frame, (x, y), 4, (100, 100, 100), -1)
     
     cv2.imshow('Bay Detection - Robust', frame)
     

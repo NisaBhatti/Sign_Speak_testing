@@ -1,0 +1,23 @@
+{
+  "model": "Bay Robust",
+  "sign": "ب (Bay)",
+  "input": "42 MediaPipe landmarks (x,y in 0-1 range)",
+  "preprocessing": "Divide x by 300, y by 300",
+  "augmentation": "Noise (σ=0.02), Scale (0.9x, 1.1x), Shift (±0.02)",
+  "architecture": "8-layer Dense with BatchNorm + Dropout",
+  "train_samples": 2888,
+  "val_samples": 510,
+  "test_samples": 850,
+  "original_bay_samples": 177,
+  "augmented_bay_samples": 1416,
+  "test_accuracy": 1.0,
+  "test_auc": 1.0,
+  "bay_detection_rate": 100.0,
+  "specificity": 99.97973657548125,
+  "image_size": "300x300",
+  "threshold": 0.5,
+  "classes": [
+    "Not Bay",
+    "Bay (ب)"
+  ]
+}
