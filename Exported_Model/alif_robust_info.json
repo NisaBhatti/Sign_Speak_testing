@@ -1,0 +1,15 @@
+{
+  "model": "Alif Robust",
+  "input": "42 MediaPipe landmarks (x,y in 0-1 range)",
+  "preprocessing": "NO scaler - raw MediaPipe values directly",
+  "augmentation": "Noise, Scale, Shift applied",
+  "test_accuracy": 0.9949195384979248,
+  "test_auc": 0.9999969005584717,
+  "alif_detection_rate": 100.0,
+  "image_size": "300x300",
+  "threshold": 0.5,
+  "classes": [
+    "Not Alif",
+    "Alif"
+  ]
+}
