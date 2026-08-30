@@ -1,0 +1,102 @@
+﻿# Machine Learning Models
+*.h5
+*.hdf5
+*.tflite
+*.pb
+*.onnx
+*.pth
+*.pt
+*.pkl
+*.joblib
+*.model
+*.weights
+
+# Datasets & Archives
+*.zip
+*.rar
+*.7z
+*.tar.gz
+*.gz
+*.bz2
+*.xz
+*.iso
+*.img
+
+# Images
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.psd
+*.ai
+*.eps
+
+# Videos
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.wmv
+*.flv
+*.webm
+
+# Audio
+*.mp3
+*.wav
+*.aac
+*.flac
+*.ogg
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+*.mdb
+
+# Executables
+*.exe
+*.msi
+*.dmg
+*.pkg
+*.deb
+*.rpm
+
+# Documents
+*.pdf
+*.doc
+*.docx
+*.ppt
+*.pptx
+*.xls
+*.xlsx
+
+# Large folders
+Simple_Dataset/
+PSL/
+Exported_Model/
+datasets/
+data/
+models/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+env/
+.venv/
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
