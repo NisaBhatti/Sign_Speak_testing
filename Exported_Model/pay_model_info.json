@@ -1,0 +1,9 @@
+{
+  "model": "Pay Detection Model",
+  "accuracy": 1.0,
+  "threshold": 0.5,
+  "pay_samples": 31,
+  "non_pay_samples": 62,
+  "train_samples": 74,
+  "test_samples": 19
+}

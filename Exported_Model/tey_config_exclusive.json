@@ -1,0 +1,17 @@
+{
+  "model_path": "D:\\MODEL\\Sign_Speak_testing-main\\Exported_Model\\tey_model_exclusive.tflite",
+  "label_encoder_path": "D:\\MODEL\\Sign_Speak_testing-main\\Exported_Model\\tey_label_encoder_exclusive.pkl",
+  "threshold": 0.7,
+  "metrics": {
+    "accuracy": 1.0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1_score": 1.0
+  },
+  "training_config": {
+    "tey_samples": 44,
+    "non_tey_samples": 872,
+    "total_samples": 916,
+    "training_samples": 2336
+  }
+}
