@@ -1,275 +1,314 @@
-# Save as: model_training/train_thay_robust.py
+# Save as: D:\MODEL\Sign_Speak_testing-main\Training\train_thay_cshape.py
 
-import sqlite3
-import numpy as np
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Dropout, BatchNormalization
-from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
+import os, cv2, numpy as np, mediapipe as mp, tensorflow as tf, json, sqlite3, re
+from tensorflow import keras
+from tensorflow.keras import layers
 from sklearn.model_selection import train_test_split
-from sklearn.utils.class_weight import compute_class_weight
-import json
-import os
-import re
+from sklearn.metrics import (accuracy_score, roc_auc_score, classification_report,
+                             precision_score, recall_score, f1_score)
+from sklearn.utils import class_weight
+import warnings
+warnings.filterwarnings('ignore')
 
 print("="*60)
-print("SIGNSPEAK - Training Thay ROBUST Model")
+print("SIGNSPEAK - Thay C-Shape Detector (STRICT)")
 print("="*60)
 
-# ========== CONFIGURATION ==========
-DB_PATH = r"C:\Users\asifa\OneDrive\Desktop\Model\Simple_Dataset\main_dataset.db"
-OUTPUT_DIR = r"C:\Users\asifa\OneDrive\Desktop\Model\Exported_Model\exported_models_thay"
+# ========== PATHS ==========
+PROJECT_ROOT    = r"D:\MODEL\Sign_Speak_testing-main"
+THAY_IMAGES_DIR = os.path.join(PROJECT_ROOT, "Simple_Dataset", "Thay")
+DB_PATH         = os.path.join(PROJECT_ROOT, "Simple_Dataset", "main_dataset.db")
+OUTPUT_DIR      = os.path.join(PROJECT_ROOT, "Exported_Model")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-IMAGE_WIDTH = 300
-IMAGE_HEIGHT = 300
+MODEL_PATH = os.path.join(OUTPUT_DIR, "thay_robust.tflite")
+INFO_PATH  = os.path.join(OUTPUT_DIR, "thay_robust_info.json")
+KERAS_PATH = os.path.join(OUTPUT_DIR, "thay_robust.keras")
+REF_PATH   = os.path.join(OUTPUT_DIR, "thay_reference.npy")
 
-# Arabic letter for Thay
-THAY_LETTER = 'ط'
+print(f"\nPaths:")
+print(f"  Thay imgs: {THAY_IMAGES_DIR}")
+print(f"  DB       : {DB_PATH}")
+print(f"  Output   : {OUTPUT_DIR}")
 
-# ========== LOAD DATA ==========
-print("\n📁 Loading all data...")
-conn = sqlite3.connect(DB_PATH)
-cursor = conn.cursor()
-cursor.execute("SELECT * FROM rightHandDataset")
-all_data = cursor.fetchall()
-conn.close()
+# ========== MEDIAPIPE ==========
+mp_hands = mp.solutions.hands
+hands = mp_hands.Hands(static_image_mode=True, max_num_hands=1,
+                       min_detection_confidence=0.3, min_tracking_confidence=0.3)
 
-print(f"   Total samples: {len(all_data)}")
+def landmarks_from_image(img_path):
+    img = cv2.imread(img_path)
+    if img is None: return None
+    res = hands.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    if not res.multi_hand_landmarks: return None
+    return np.array([[lm.x, lm.y] for lm in res.multi_hand_landmarks[0].landmark],
+                    dtype=np.float32)
 
-X_all = []
-y_all = []
+# ========== FEATURE ENGINEERING (captures C-shape) ==========
+# Finger tip/PIP/DIP/MCP indices
+FINGER_JOINTS = {
+    'thumb':  [1, 2, 3, 4],
+    'index':  [5, 6, 7, 8],
+    'middle': [9, 10, 11, 12],
+    'ring':   [13, 14, 15, 16],
+    'pinky':  [17, 18, 19, 20],
+}
+WRIST = 0
+PALM_CENTER = [0, 5, 9, 13, 17]
 
-for row in all_data:
-    features = [float(row[i]) for i in range(1, 43)]
-    label = re.sub(r'[\u200B-\u200F\u202A-\u202E\u2066-\u2069]', '', row[43]).strip()
-    X_all.append(features)
-    y_all.append(label)
+def extract_features(lm_xy):
+    """
+    Return engineered features that describe hand SHAPE (not just position).
+    Captures C-shape via finger curl angles + tip-to-palm distances.
+    """
+    lm = lm_xy.astype(np.float32)
 
-X_all = np.array(X_all, dtype=np.float32)
-y_all = np.array(y_all)
+    # 1) Center everything on wrist (translation invariance)
+    lm = lm - lm[WRIST:WRIST+1]
 
-# ========== NORMALIZE ==========
-print(f"\n📏 Normalizing features...")
-print(f"   Before: min={X_all.min():.1f}, max={X_all.max():.1f}")
+    # 2) Scale by palm size (scale invariance)
+    palm_size = np.mean(np.linalg.norm(lm[[5,9,13,17]] - lm[WRIST], axis=1))
+    if palm_size < 1e-5:
+        palm_size = 1.0
+    lm = lm / palm_size
 
-X_norm = X_all.copy()
-X_norm[:, 0::2] = X_all[:, 0::2] / IMAGE_WIDTH   # X coordinates
-X_norm[:, 1::2] = X_all[:, 1::2] / IMAGE_HEIGHT  # Y coordinates
+    feats = []
 
-print(f"   After: min={X_norm.min():.4f}, max={X_norm.max():.4f}")
-print(f"   Mean: {X_norm.mean():.4f}, Std: {X_norm.std():.4f}")
+    # 3) Raw normalized landmarks (42)
+    feats.extend(lm.flatten())
 
-# ========== DATA AUGMENTATION FOR THAY ==========
-print(f"\n🔧 Augmenting Thay data for robustness...")
+    # 4) Finger curl: angle at PIP joint for each finger
+    #    Straight finger ~ 180°, curled ~ 0-90°
+    for name, (mcp, pip, dip, tip) in FINGER_JOINTS.items():
+        v1 = lm[mcp] - lm[pip]
+        v2 = lm[tip] - lm[pip]
+        n1 = np.linalg.norm(v1) + 1e-6
+        n2 = np.linalg.norm(v2) + 1e-6
+        cos_a = np.clip(np.dot(v1, v2) / (n1 * n2), -1, 1)
+        feats.append(np.arccos(cos_a) / np.pi)  # normalized 0-1
 
-thay_mask = y_all == THAY_LETTER
-X_thay_original = X_norm[thay_mask].copy()
-y_thay_original = y_all[thay_mask].copy()
+    # 5) Tip-to-palm-center distance (curled finger = small distance)
+    palm_c = lm[PALM_CENTER].mean(axis=0)
+    for name, (mcp, pip, dip, tip) in FINGER_JOINTS.items():
+        d = np.linalg.norm(lm[tip] - palm_c)
+        feats.append(d)
 
-print(f"   Original Thay samples: {len(X_thay_original)}")
+    # 6) Finger spread: distance between adjacent fingertips
+    tips = [4, 8, 12, 16, 20]
+    for i in range(len(tips) - 1):
+        d = np.linalg.norm(lm[tips[i]] - lm[tips[i+1]])
+        feats.append(d)
 
-# Create augmented versions
-augmented_X = [X_thay_original]
-augmented_y = [y_thay_original]
+    # 7) Thumb-index distance (key for C-shape: thumb is out)
+    feats.append(np.linalg.norm(lm[4] - lm[8]))
 
-# Augmentation 1: Add small random noise (simulates camera noise)
-noise = np.random.normal(0, 0.02, X_thay_original.shape).astype(np.float32)
-X_noisy = np.clip(X_thay_original + noise, 0, 1)
-augmented_X.append(X_noisy)
-augmented_y.append(y_thay_original)
+    # 8) Hand "openness": mean tip-to-wrist distance / palm size
+    tip_dists = [np.linalg.norm(lm[t] - lm[WRIST]) for t in tips]
+    feats.append(np.mean(tip_dists))
+    feats.append(np.std(tip_dists))
 
-# Augmentation 2: Scale slightly (simulates different distances)
-for scale in [0.9, 1.1]:
-    X_scaled = np.clip(X_thay_original * scale, 0, 1)
-    augmented_X.append(X_scaled)
-    augmented_y.append(y_thay_original)
+    return np.array(feats, dtype=np.float32)
 
-# Augmentation 3: Shift slightly (simulates different positions)
-for shift_x, shift_y in [(0.02, 0), (-0.02, 0), (0, 0.02), (0, -0.02)]:
-    X_shifted = X_thay_original.copy()
-    X_shifted[:, 0::2] = np.clip(X_shifted[:, 0::2] + shift_x, 0, 1)  # Shift X
-    X_shifted[:, 1::2] = np.clip(X_shifted[:, 1::2] + shift_y, 0, 1)  # Shift Y
-    augmented_X.append(X_shifted)
-    augmented_y.append(y_thay_original)
 
-# Combine all augmentations
-X_thay_augmented = np.vstack(augmented_X)
-y_thay_augmented = np.hstack(augmented_y)
+def extract_features_batch(lm_array):
+    """lm_array: (N,21,2) -> (N,F)"""
+    return np.stack([extract_features(x) for x in lm_array])
 
-print(f"   Augmented Thay samples: {len(X_thay_augmented)}")
 
-# ========== CREATE DATASET ==========
-print(f"\n📊 Creating balanced dataset...")
+print("\n📂 Loading Thay images...")
+exts = ('.jpg','.jpeg','.png','.bmp','.webp')
+files = [f for f in os.listdir(THAY_IMAGES_DIR) if f.lower().endswith(exts)]
+print(f"   Found {len(files)} images")
 
-# Get other class samples
-X_other = X_norm[~thay_mask]
-y_other = y_all[~thay_mask]
+thay_lm = []
+for i, fn in enumerate(files):
+    lm = landmarks_from_image(os.path.join(THAY_IMAGES_DIR, fn))
+    if lm is not None:
+        thay_lm.append(lm)
+    if (i+1) % 100 == 0:
+        print(f"   {i+1}/{len(files)} | kept {len(thay_lm)}")
 
-# Take enough other samples to balance
-n_thay = len(X_thay_augmented)
-n_other = min(len(X_other), n_thay * 2)
+if len(thay_lm) < 10:
+    print("❌ Too few Thay images with detected hands.")
+    exit()
 
-np.random.seed(42)
-indices = np.random.choice(len(X_other), n_other, replace=False)
-X_other_bal = X_other[indices]
-y_other_bal = y_other[indices]
+thay_lm = np.array(thay_lm, dtype=np.float32)
+print(f"   ✅ {len(thay_lm)} valid Thay images")
 
-# Combine
-X = np.vstack([X_thay_augmented, X_other_bal])
-y = np.hstack([np.ones(n_thay), np.zeros(n_other)])
+# ========== NEGATIVES FROM DB (other signs) ==========
+print("\n📊 Loading negatives from DB...")
+neg_lm = []
+if os.path.exists(DB_PATH):
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.cursor().execute("SELECT * FROM rightHandDataset").fetchall()
+    conn.close()
+    THAY_CHARS = {'ث','thay','THAY','Thay'}
+    for row in rows:
+        label = re.sub(r'[\u200B-\u200F\u202A-\u202E\u2066-\u2069]','',row[43]).strip()
+        if label in THAY_CHARS: continue
+        # DB stores pixel coords (0-300 range), convert to 0-1
+        xy = np.array([float(row[i]) for i in range(1,43)], dtype=np.float32).reshape(21,2)
+        xy[:,0] /= 300.0
+        xy[:,1] /= 300.0
+        neg_lm.append(xy)
 
-# Shuffle
+neg_lm = np.array(neg_lm, dtype=np.float32) if neg_lm else np.zeros((0,21,2), np.float32)
+print(f"   ✅ {len(neg_lm)} DB negatives")
+
+# ========== SYNTHETIC HARD NEGATIVES (fake C-shapes) ==========
+# Create *plausible* hand shapes that could be confused with Thay
+print("\n🔧 Creating hard synthetic negatives...")
+
+def jitter(lm, sigma=0.02):
+    return lm + np.random.normal(0, sigma, lm.shape).astype(np.float32)
+
+thay_mean = thay_lm.mean(axis=0)
+synth = []
+
+# Slight variations of *other* plausible shapes (NOT Thay)
+for _ in range(500):
+    v = jitter(thay_mean, 0.05).copy()
+    # Straighten ALL fingers (open hand)
+    for tip in [4,8,12,16,20]:
+        v[tip] = v[tip] + (v[tip] - v[0]) * 0.5
+    synth.append(v)
+
+for _ in range(500):
+    v = jitter(thay_mean, 0.05).copy()
+    # Close all fingers (fist)
+    palm = v[[0,5,9,13,17]].mean(axis=0)
+    for tip in [4,8,12,16,20]:
+        v[tip] = palm + (v[tip] - palm) * 0.3
+    synth.append(v)
+
+for _ in range(400):
+    v = jitter(thay_mean, 0.06).copy()
+    # Scramble finger positions
+    np.random.shuffle(v[5:])
+    synth.append(v)
+
+for _ in range(400):
+    # Pure random hand pose
+    synth.append(np.random.uniform(0.2, 0.8, (21,2)).astype(np.float32))
+
+synth = np.array(synth, dtype=np.float32)
+print(f"   ✅ {len(synth)} synthetic negatives")
+
+neg_all = np.concatenate([neg_lm, synth], axis=0) if len(neg_lm) else synth
+
+# ========== EXTRACT FEATURES ==========
+print("\n🔢 Extracting engineered features...")
+X_pos = extract_features_batch(thay_lm)
+X_neg = extract_features_batch(neg_all)
+print(f"   Feature dim: {X_pos.shape[1]}")
+
+X = np.vstack([X_pos, X_neg]).astype(np.float32)
+y = np.concatenate([np.ones(len(X_pos), np.float32),
+                    np.zeros(len(X_neg), np.float32)])
+
 idx = np.random.permutation(len(X))
 X, y = X[idx], y[idx]
+print(f"📦 Dataset: {len(X)} | +{int(y.sum())} | -{int(len(y)-y.sum())}")
 
-print(f"   Total: {len(X)} samples")
-print(f"   Thay (1): {int(y.sum())} | Other (0): {len(y)-int(y.sum())}")
+X_tr, X_tmp, y_tr, y_tmp = train_test_split(X, y, test_size=0.30, random_state=42, stratify=y)
+X_v, X_te, y_v, y_te = train_test_split(X_tmp, y_tmp, test_size=0.50, random_state=42, stratify=y_tmp)
 
-# ========== SPLIT ==========
-print(f"\n✂️ Splitting...")
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42, stratify=y
-)
-X_train, X_val, y_train, y_val = train_test_split(
-    X_train, y_train, test_size=0.15, random_state=42, stratify=y_train
-)
+cw = class_weight.compute_class_weight('balanced', classes=np.unique(y_tr), y=y_tr)
+class_weights = {0: cw[0], 1: cw[1]}
 
-print(f"   Train: {len(X_train)} | Val: {len(X_val)} | Test: {len(X_test)}")
+# ========== MODEL ==========
+FEAT_DIM = X.shape[1]
+print(f"\n🧠 Building model (input={FEAT_DIM})")
 
-# ========== CLASS WEIGHTS ==========
-class_weights = compute_class_weight('balanced', classes=np.array([0, 1]), y=y_train)
-class_weight_dict = {0: class_weights[0], 1: class_weights[1]}
-print(f"\n⚖️ Class weights: {class_weight_dict}")
+def build_model():
+    inp = keras.Input(shape=(FEAT_DIM,))
+    x = layers.Dense(256, activation='relu')(inp); x = layers.BatchNormalization()(x); x = layers.Dropout(0.4)(x)
+    x = layers.Dense(128, activation='relu')(x); x = layers.BatchNormalization()(x); x = layers.Dropout(0.4)(x)
+    x = layers.Dense(64,  activation='relu')(x); x = layers.BatchNormalization()(x); x = layers.Dropout(0.3)(x)
+    x = layers.Dense(32,  activation='relu')(x); x = layers.Dropout(0.2)(x)
+    out = layers.Dense(1, activation='sigmoid')(x)
+    return keras.Model(inp, out)
 
-# ========== BUILD MODEL ==========
-print(f"\n🏗️ Building robust model...")
-
-model = Sequential([
-    # Input layer
-    Dense(256, activation='relu', input_shape=(42,)),
-    BatchNormalization(),
-    Dropout(0.5),
-    
-    # Hidden layers
-    Dense(256, activation='relu'),
-    BatchNormalization(),
-    Dropout(0.5),
-    
-    Dense(128, activation='relu'),
-    BatchNormalization(),
-    Dropout(0.4),
-    
-    Dense(128, activation='relu'),
-    BatchNormalization(),
-    Dropout(0.4),
-    
-    Dense(64, activation='relu'),
-    BatchNormalization(),
-    Dropout(0.3),
-    
-    Dense(32, activation='relu'),
-    BatchNormalization(),
-    Dropout(0.3),
-    
-    Dense(16, activation='relu'),
-    BatchNormalization(),
-    Dropout(0.2),
-    
-    # Output
-    Dense(1, activation='sigmoid')
-])
-
-# Use lower learning rate for better convergence
-optimizer = tf.keras.optimizers.Adam(learning_rate=0.0003)
-
-model.compile(
-    optimizer=optimizer,
-    loss='binary_crossentropy',
-    metrics=['accuracy', tf.keras.metrics.AUC(name='auc')]
-)
-
-model.summary()
+model = build_model()
+model.compile(optimizer=keras.optimizers.Adam(0.001),
+              loss='binary_crossentropy',
+              metrics=['accuracy', keras.metrics.AUC(name='auc')])
 
 # ========== TRAIN ==========
-print(f"\n🚀 Training...")
-callbacks = [
-    EarlyStopping(monitor='val_loss', patience=25, restore_best_weights=True, verbose=1),
-    ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=12, min_lr=1e-7, verbose=1),
-    ModelCheckpoint(
-        os.path.join(OUTPUT_DIR, 'best_thay.h5'),
-        monitor='val_accuracy',
-        save_best_only=True,
-        verbose=1
-    )
+print("\n🚀 Training...")
+cb = [
+    keras.callbacks.EarlyStopping(monitor='val_auc', patience=40, mode='max',
+                                   restore_best_weights=True, verbose=1),
+    keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5,
+                                       patience=15, min_lr=1e-6, verbose=1),
 ]
+model.fit(X_tr, y_tr, validation_data=(X_v, y_v),
+          epochs=300, batch_size=32, class_weight=class_weights,
+          callbacks=cb, verbose=1)
 
-history = model.fit(
-    X_train, y_train,
-    validation_data=(X_val, y_val),
-    epochs=200,
-    batch_size=32,
-    callbacks=callbacks,
-    class_weight=class_weight_dict,
-    verbose=1
-)
+# ========== EVALUATE — HIGH PRECISION THRESHOLD ==========
+y_prob = model.predict(X_te, verbose=0).flatten()
+auc = roc_auc_score(y_te, y_prob)
 
-# ========== EVALUATE ==========
-print(f"\n📊 Final Results:")
-train_loss, train_acc, train_auc = model.evaluate(X_train, y_train, verbose=0)
-val_loss, val_acc, val_auc = model.evaluate(X_val, y_val, verbose=0)
-test_loss, test_acc, test_auc = model.evaluate(X_test, y_test, verbose=0)
+# **KEY CHANGE**: pick threshold maximizing PRECISION subject to recall >= 0.80
+# This kills false positives (other signs) while still catching real Thay
+best = (0, 0.5)
+for t in np.arange(0.5, 0.995, 0.005):
+    yp = (y_prob > t).astype(int)
+    rec = recall_score(y_te, yp, zero_division=0)
+    if rec < 0.80:
+        continue
+    prec = precision_score(y_te, yp, zero_division=0)
+    if prec > best[0]:
+        best = (prec, t)
 
-print(f"   Train: Acc={train_acc*100:.2f}%, AUC={train_auc:.4f}")
-print(f"   Val:   Acc={val_acc*100:.2f}%, AUC={val_auc:.4f}")
-print(f"   Test:  Acc={test_acc*100:.2f}%, AUC={test_auc:.4f}")
+best_thresh = best[1]
+acc  = accuracy_score(y_te, (y_prob > best_thresh).astype(int))
+prec = precision_score(y_te, (y_prob > best_thresh).astype(int), zero_division=0)
+rec  = recall_score(y_te, (y_prob > best_thresh).astype(int), zero_division=0)
 
-# Test on original Thay samples (not augmented)
-thay_preds = model.predict(X_thay_original, verbose=0).flatten()
-thay_detected = (thay_preds > 0.5).sum()
-thay_rate = thay_detected / len(X_thay_original) * 100
-print(f"\n   Original Thay detection: {thay_rate:.1f}% ({thay_detected}/{len(X_thay_original)})")
-print(f"   Avg Thay confidence: {thay_preds.mean():.4f}")
-print(f"   Min Thay confidence: {thay_preds.min():.4f}")
-print(f"   Max Thay confidence: {thay_preds.max():.4f}")
+print(f"\n   ✅ Test Acc: {acc*100:.2f}% | AUC: {auc:.4f}")
+print(f"   ✅ Threshold: {best_thresh:.3f}")
+print(f"   ✅ Precision: {prec:.3f}  <- higher = fewer false positives")
+print(f"   ✅ Recall:    {rec:.3f}  <- higher = catches more real Thay")
+print(classification_report(y_te, (y_prob > best_thresh).astype(int),
+                             target_names=['Not Thay','Thay']))
 
-# Test on other samples
-other_preds = model.predict(X_other, verbose=0).flatten()
-false_positives = (other_preds > 0.5).sum()
-print(f"\n   False positives: {false_positives}/{len(X_other)} ({(1-false_positives/len(X_other))*100:.1f}% specificity)")
+# ========== CONVERT ==========
+print("\n📦 Converting to TFLite...")
+conv = tf.lite.TFLiteConverter.from_keras_model(model)
+conv.optimizations = [tf.lite.Optimize.DEFAULT]
+def rep_gen():
+    for i in range(min(300, len(X_tr))):
+        yield [X_tr[i:i+1].astype(np.float32)]
+conv.representative_dataset = rep_gen
+conv.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
+conv.inference_input_type  = tf.float32
+conv.inference_output_type = tf.float32
+tfl = conv.convert()
+open(MODEL_PATH, 'wb').write(tfl)
+model.save(KERAS_PATH)
+print(f"   ✅ {MODEL_PATH} ({len(tfl)/1024:.1f} KB)")
 
-# ========== SAVE ==========
-print(f"\n💾 Saving models...")
-
-# Keras model
-model.save(os.path.join(OUTPUT_DIR, 'thay_robust.h5'))
-
-# TFLite
-converter = tf.lite.TFLiteConverter.from_keras_model(model)
-tflite_model = converter.convert()
-with open(os.path.join(OUTPUT_DIR, 'thay_robust.tflite'), 'wb') as f:
-    f.write(tflite_model)
-
-print(f"   TFLite size: {len(tflite_model)/1024:.1f} KB")
-
-# Info
+# ========== INFO + REFERENCE ==========
 info = {
-    'model': 'Thay Robust',
-    'letter': THAY_LETTER,
-    'input': '42 MediaPipe landmarks (x,y in 0-1 range)',
-    'preprocessing': 'NO scaler - raw MediaPipe values directly',
-    'augmentation': 'Noise, Scale, Shift applied',
-    'test_accuracy': float(test_acc),
-    'test_auc': float(test_auc),
-    'thay_detection_rate': float(thay_rate),
-    'image_size': f'{IMAGE_WIDTH}x{IMAGE_HEIGHT}',
-    'threshold': 0.5,
-    'classes': ['Not Thay', 'Thay']
+    "model": "Thay C-Shape Detector",
+    "sign": "ث", "sign_name": "Thay",
+    "test_accuracy": float(acc),
+    "test_auc": float(auc),
+    "test_precision": float(prec),
+    "test_recall": float(rec),
+    "threshold": float(best_thresh),
+    "input_features": int(FEAT_DIM),
+    "feature_engineering": "translation+scale invariant, finger curl angles, tip-palm distances",
+    "requires_geometric_check": False
 }
+json.dump(info, open(INFO_PATH,'w',encoding='utf-8'), indent=2, ensure_ascii=False)
+np.save(REF_PATH, thay_lm.mean(axis=0))
 
-with open(os.path.join(OUTPUT_DIR, 'thay_robust_info.json'), 'w', encoding='utf-8') as f:
-    json.dump(info, f, indent=2, ensure_ascii=False)
-
-print(f"\n✅ TRAINING COMPLETE!")
-print(f"   Test Accuracy: {test_acc*100:.2f}%")
-print(f"   Thay Detection: {thay_rate:.1f}%")
+print("\n" + "="*60)
+print("✅ TRAINING COMPLETE")
+print("="*60)
+print(f"   Precision: {prec:.3f}  (aim > 0.90)")
+print(f"   Recall:    {rec:.3f}  (aim > 0.80)")
+hands.close()

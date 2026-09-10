@@ -1,237 +1,170 @@
-# Save as: testing/test_thay_robust.py
+# Save as: D:\MODEL\Sign_Speak_testing-main\Testing\thay_test.py
 
-import cv2
-import numpy as np
-import tensorflow as tf
-import mediapipe as mp
-import json
-import sqlite3
-import re
+import cv2, numpy as np, tensorflow as tf, mediapipe as mp, json, os
 from collections import deque
 
 print("="*60)
-print("SIGNSPEAK - Thay Robust Detection")
+print("SIGNSPEAK - Thay C-Shape Detection")
 print("="*60)
 
-# ========== PATHS ==========
-MODEL_PATH = r"C:\Users\asifa\OneDrive\Desktop\Model\Exported_Model\exported_models_thay\thay_robust.tflite"
-INFO_PATH = r"C:\Users\asifa\OneDrive\Desktop\Model\Exported_Model\exported_models_thay\thay_robust_info.json"
-DB_PATH = r"C:\Users\asifa\OneDrive\Desktop\Model\Simple_Dataset\main_dataset.db"
+PROJECT_ROOT = r"D:\MODEL\Sign_Speak_testing-main"
+MODEL_PATH = os.path.join(PROJECT_ROOT, "Exported_Model", "thay_robust.tflite")
+INFO_PATH  = os.path.join(PROJECT_ROOT, "Exported_Model", "thay_robust_info.json")
+REF_PATH   = os.path.join(PROJECT_ROOT, "Exported_Model", "thay_reference.npy")
 
-# Arabic letter for Thay
-THAY_LETTER = 'ط'
-
-# ========== LOAD MODEL ==========
-print("\n📁 Loading model...")
+# ========== LOAD ==========
 interpreter = tf.lite.Interpreter(model_path=MODEL_PATH)
 interpreter.allocate_tensors()
-input_details = interpreter.get_input_details()
-output_details = interpreter.get_output_details()
-
-with open(INFO_PATH, 'r', encoding='utf-8') as f:
-    info = json.load(f)
-
+in_det  = interpreter.get_input_details()
+out_det = interpreter.get_output_details()
+info = json.load(open(INFO_PATH, 'r', encoding='utf-8'))
+THRESHOLD = info['threshold']
 print(f"   Model: {info['model']}")
-print(f"   Accuracy: {info['test_accuracy']*100:.1f}%")
-print(f"   AUC: {info['test_auc']:.4f}")
-print(f"   Threshold: {info['threshold']}")
+print(f"   Acc: {info['test_accuracy']*100:.1f}% | AUC: {info['test_auc']:.4f}")
+print(f"   Precision: {info['test_precision']:.3f} | Recall: {info['test_recall']:.3f}")
+print(f"   Threshold: {THRESHOLD}")
 
-# ========== GET REFERENCE THAY FROM DATABASE ==========
-print("\n📊 Loading reference Thay landmarks...")
-conn = sqlite3.connect(DB_PATH)
-cursor = conn.cursor()
-cursor.execute("SELECT * FROM rightHandDataset")
-all_data = cursor.fetchall()
-conn.close()
+ref_thay = np.load(REF_PATH) if os.path.exists(REF_PATH) else None
 
-thay_samples = []
-for row in all_data:
-    label = re.sub(r'[\u200B-\u200F\u202A-\u202E\u2066-\u2069]', '', row[43]).strip()
-    if label == THAY_LETTER:
-        features = [float(row[i]) for i in range(1, 43)]
-        thay_samples.append(features)
+# ========== SAME FEATURE ENGINEERING AS TRAINING ==========
+FINGER_JOINTS = {
+    'thumb':  [1,2,3,4], 'index': [5,6,7,8], 'middle': [9,10,11,12],
+    'ring':   [13,14,15,16], 'pinky': [17,18,19,20],
+}
+WRIST = 0
+PALM_CENTER = [0,5,9,13,17]
 
-thay_samples = np.array(thay_samples, dtype=np.float32)
-# Normalize to 0-1
-thay_samples[:, 0::2] = thay_samples[:, 0::2] / 300.0
-thay_samples[:, 1::2] = thay_samples[:, 1::2] / 300.0
+def extract_features(lm_xy):
+    lm = lm_xy.astype(np.float32)
+    lm = lm - lm[WRIST:WRIST+1]
+    palm_size = np.mean(np.linalg.norm(lm[[5,9,13,17]] - lm[WRIST], axis=1))
+    if palm_size < 1e-5: palm_size = 1.0
+    lm = lm / palm_size
 
-# Average Thay landmarks
-ref_thay = thay_samples.mean(axis=0).reshape(21, 2)
-print(f"   Reference from {len(thay_samples)} Thay samples")
+    feats = list(lm.flatten())
+
+    for name, (mcp, pip, dip, tip) in FINGER_JOINTS.items():
+        v1 = lm[mcp] - lm[pip]; v2 = lm[tip] - lm[pip]
+        n1 = np.linalg.norm(v1) + 1e-6; n2 = np.linalg.norm(v2) + 1e-6
+        cos_a = np.clip(np.dot(v1, v2) / (n1 * n2), -1, 1)
+        feats.append(np.arccos(cos_a) / np.pi)
+
+    palm_c = lm[PALM_CENTER].mean(axis=0)
+    for name, (mcp, pip, dip, tip) in FINGER_JOINTS.items():
+        feats.append(np.linalg.norm(lm[tip] - palm_c))
+
+    tips = [4,8,12,16,20]
+    for i in range(len(tips)-1):
+        feats.append(np.linalg.norm(lm[tips[i]] - lm[tips[i+1]]))
+    feats.append(np.linalg.norm(lm[4] - lm[8]))
+
+    tip_dists = [np.linalg.norm(lm[t] - lm[WRIST]) for t in tips]
+    feats.append(np.mean(tip_dists))
+    feats.append(np.std(tip_dists))
+
+    return np.array(feats, dtype=np.float32)
 
 # ========== MEDIAPIPE ==========
-print("\n🖐️ Starting MediaPipe...")
 mp_hands = mp.solutions.hands
-mp_drawing = mp.solutions.drawing_utils
+hands = mp_hands.Hands(static_image_mode=False, max_num_hands=1,
+                       min_detection_confidence=0.6, min_tracking_confidence=0.6)
 
-hands = mp_hands.Hands(
-    static_image_mode=False,
-    max_num_hands=1,
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5
-)
-
-# ========== CAMERA ==========
-print("\n📷 Opening camera...")
 cap = cv2.VideoCapture(0)
-if not cap.isOpened():
-    print("ERROR: Cannot open camera!")
-    exit()
-
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 960)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-
-cv2.namedWindow('Thay Detection - Robust', cv2.WINDOW_NORMAL)
-cv2.resizeWindow('Thay Detection - Robust', 1100, 800)
+WIN = 'Thay C-Shape Detection'
+cv2.namedWindow(WIN, cv2.WINDOW_NORMAL); cv2.resizeWindow(WIN, 1100, 800)
 
 print("\n" + "="*60)
-print("🎯 THAY DETECTION")
+print("🎯 THAY (ث) C-SHAPE DETECTION")
 print("="*60)
-print("   GREEN dots = YOUR hand")
-print("   WHITE skeleton = Reference Thay")
-print("   GREEN text = Thay detected!")
-print("")
-print("   How to sign Thay (ط):")
-print("   ☝️ Index finger straight UP")
-print("   👍 Thumb folded across palm")
-print("   ✊ Other fingers folded")
-print("   🖐️ Any hand position works!")
-print("")
-print("   Q=Quit  S=Save Screenshot")
+print("   Show the C-shape sign. Other signs will be rejected.")
+print("   Q=Quit  S=Save")
 print("="*60 + "\n")
 
-# ========== SMOOTHING ==========
-prediction_history = deque(maxlen=10)
+pred_hist = deque(maxlen=10)
 frame_count = 0
 
 while True:
     ret, frame = cap.read()
-    if not ret:
-        continue
-    
+    if not ret: continue
     frame = cv2.flip(frame, 1)
     h, w = frame.shape[:2]
     frame_count += 1
-    
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = hands.process(frame_rgb)
-    
+
+    results = hands.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+
     if results.multi_hand_landmarks:
         for hand_landmarks in results.multi_hand_landmarks:
-            
-            # ===== DRAW REFERENCE THAY (WHITE) =====
-            for i, (rx, ry) in enumerate(ref_thay):
-                x = int(rx * w)
-                y = int(ry * h)
-                cv2.circle(frame, (x, y), 5, (255, 255, 255), -1)
-                cv2.circle(frame, (x, y), 7, (255, 255, 255), 1)
-            
-            # Reference connections
-            for conn in mp_hands.HAND_CONNECTIONS:
-                s_x = int(ref_thay[conn[0]][0] * w)
-                s_y = int(ref_thay[conn[0]][1] * h)
-                e_x = int(ref_thay[conn[1]][0] * w)
-                e_y = int(ref_thay[conn[1]][1] * h)
-                cv2.line(frame, (s_x, s_y), (e_x, e_y), (255, 255, 255), 1)
-            
-            # ===== DRAW YOUR HAND (GREEN) =====
-            for lm in hand_landmarks.landmark:
-                cv2.circle(frame, (int(lm.x*w), int(lm.y*h)), 6, (0, 255, 0), -1)
-                cv2.circle(frame, (int(lm.x*w), int(lm.y*h)), 8, (0, 200, 0), 2)
-            
-            # Your connections
-            for conn in mp_hands.HAND_CONNECTIONS:
-                s = hand_landmarks.landmark[conn[0]]
-                e = hand_landmarks.landmark[conn[1]]
-                cv2.line(frame, 
-                       (int(s.x*w), int(s.y*h)),
-                       (int(e.x*w), int(e.y*h)),
-                       (0, 255, 0), 2)
-            
-            # ===== PREDICT =====
-            features = []
-            for lm in hand_landmarks.landmark:
-                features.extend([lm.x, lm.y])
-            
-            features = np.array(features, dtype=np.float32).reshape(1, -1)
-            
-            interpreter.set_tensor(input_details[0]['index'], features)
-            interpreter.invoke()
-            prediction = interpreter.get_tensor(output_details[0]['index'])[0][0]
-            
-            # Smooth
-            prediction_history.append(prediction)
-            smooth_pred = sum(prediction_history) / len(prediction_history)
-            
-            is_thay = smooth_pred > 0.5
-            confidence = smooth_pred if is_thay else (1 - smooth_pred)
-            
-            # ===== DISPLAY =====
-            # Top bar
-            cv2.rectangle(frame, (0, 0), (w, 90), (0, 0, 0), -1)
-            
-            if is_thay:
-                if smooth_pred > 0.8:
-                    text = f"✅ THAY (ط) - HIGH CONFIDENCE!"
-                    color = (0, 255, 0)
-                elif smooth_pred > 0.6:
-                    text = f"✅ THAY (ط) - Good"
-                    color = (0, 255, 128)
-                else:
-                    text = f"✅ THAY (ط) - Low confidence"
-                    color = (0, 255, 255)
-            else:
-                if smooth_pred < 0.2:
-                    text = f"❌ NOT THAY - Very different"
-                    color = (0, 0, 255)
-                elif smooth_pred < 0.4:
-                    text = f"❌ NOT THAY - Different"
-                    color = (0, 128, 255)
-                else:
-                    text = f"⚠️ UNCERTAIN - Close to Thay"
-                    color = (0, 165, 255)
-            
-            cv2.putText(frame, text, (20, 35),
-                      cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
-            cv2.putText(frame, f"Thay Score: {smooth_pred*100:.1f}%", (20, 65),
-                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 1)
-            cv2.putText(frame, f"Raw: {prediction:.4f} | Smoothed: {smooth_pred:.4f}", (20, 85),
-                      cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1)
-            
-            # Bottom legend
-            cv2.rectangle(frame, (0, h-40), (w, h), (0, 0, 0), -1)
-            cv2.circle(frame, (30, h-20), 6, (255, 255, 255), -1)
-            cv2.putText(frame, "Reference Thay", (45, h-13),
-                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-            cv2.circle(frame, (200, h-20), 6, (0, 255, 0), -1)
-            cv2.putText(frame, "Your Hand", (215, h-13),
-                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-            cv2.putText(frame, f"Q=Quit S=Save", (w-180, h-13),
-                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
-    
-    else:
-        # No hand detected
-        cv2.rectangle(frame, (0, 0), (w, 70), (0, 0, 0), -1)
-        cv2.putText(frame, "Show your hand to camera", (20, 40),
-                  cv2.FONT_HERSHEY_SIMPLEX, 0.9, (200, 200, 200), 2)
-        
-        # Show reference in gray
-        for i, (rx, ry) in enumerate(ref_thay):
-            x, y = int(rx * w), int(ry * h)
-            cv2.circle(frame, (x, y), 4, (100, 100, 100), -1)
-    
-    cv2.imshow('Thay Detection - Robust', frame)
-    
-    key = cv2.waitKey(1) & 0xFF
-    if key == ord('q'):
-        break
-    elif key == ord('s'):
-        filename = f"thay_test_{frame_count}.png"
-        cv2.imwrite(filename, frame)
-        print(f"📸 Saved: {filename}")
+            lm_xy = np.array([[lm.x, lm.y] for lm in hand_landmarks.landmark], dtype=np.float32)
 
-cap.release()
-cv2.destroyAllWindows()
-hands.close()
-print(f"\n✅ Done! Processed {frame_count} frames")
+            # Draw reference
+            if ref_thay is not None:
+                for rx, ry in ref_thay:
+                    cv2.circle(frame, (int(rx*w), int(ry*h)), 4, (255,255,255), -1)
+                for c in mp_hands.HAND_CONNECTIONS:
+                    cv2.line(frame,
+                             (int(ref_thay[c[0]][0]*w), int(ref_thay[c[0]][1]*h)),
+                             (int(ref_thay[c[1]][0]*w), int(ref_thay[c[1]][1]*h)),
+                             (255,255,255), 1)
+
+            # Draw user hand
+            for x, y in lm_xy:
+                cv2.circle(frame, (int(x*w), int(y*h)), 6, (0,255,0), -1)
+            for c in mp_hands.HAND_CONNECTIONS:
+                cv2.line(frame,
+                         (int(lm_xy[c[0]][0]*w), int(lm_xy[c[0]][1]*h)),
+                         (int(lm_xy[c[1]][0]*w), int(lm_xy[c[1]][1]*h)),
+                         (0,255,0), 2)
+
+            # Predict
+            feats = extract_features(lm_xy).reshape(1, -1).astype(np.float32)
+            interpreter.set_tensor(in_det[0]['index'], feats)
+            interpreter.invoke()
+            raw = float(interpreter.get_tensor(out_det[0]['index'])[0][0])
+
+            pred_hist.append(raw)
+            smooth = sum(pred_hist) / len(pred_hist)
+            is_thay = smooth > THRESHOLD
+
+            # UI
+            cv2.rectangle(frame, (0,0), (w, 95), (0,0,0), -1)
+            if is_thay:
+                if smooth > min(0.95, THRESHOLD + 0.15):
+                    text = "✅ THAY (ث) - CONFIRMED"
+                    color = (0, 255, 0)
+                else:
+                    text = "✅ THAY (ث) - DETECTED"
+                    color = (0, 255, 128)
+            else:
+                if smooth > THRESHOLD - 0.15:
+                    text = "⚠️ UNCERTAIN - Adjust hand"
+                    color = (0, 165, 255)
+                else:
+                    text = "❌ NOT THAY"
+                    color = (0, 0, 255)
+
+            cv2.putText(frame, text, (20, 35),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+            cv2.putText(frame, f"Score: {smooth*100:.1f}%  (threshold {THRESHOLD*100:.0f}%)",
+                        (20, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 1)
+            cv2.putText(frame, f"Raw: {raw:.3f} | Smooth: {smooth:.3f}",
+                        (20, 88), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (150,150,150), 1)
+
+    else:
+        pred_hist.clear()
+        cv2.rectangle(frame, (0,0), (w,70), (0,0,0), -1)
+        cv2.putText(frame, "Show your hand", (20, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (200,200,200), 2)
+        if ref_thay is not None:
+            for rx, ry in ref_thay:
+                cv2.circle(frame, (int(rx*w), int(ry*h)), 4, (100,100,100), -1)
+
+    cv2.imshow(WIN, frame)
+    k = cv2.waitKey(1) & 0xFF
+    if k == ord('q'): break
+    elif k == ord('s'):
+        cv2.imwrite(f"thay_{frame_count}.png", frame)
+
+cap.release(); cv2.destroyAllWindows(); hands.close()
+print(f"\n✅ Done. {frame_count} frames.")

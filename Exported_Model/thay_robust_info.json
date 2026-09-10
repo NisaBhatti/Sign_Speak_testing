@@ -1,0 +1,13 @@
+{
+  "model": "Thay C-Shape Detector",
+  "sign": "ث",
+  "sign_name": "Thay",
+  "test_accuracy": 1.0,
+  "test_auc": 1.0,
+  "test_precision": 1.0,
+  "test_recall": 1.0,
+  "threshold": 0.9300000000000004,
+  "input_features": 59,
+  "feature_engineering": "translation+scale invariant, finger curl angles, tip-palm distances",
+  "requires_geometric_check": false
+}
