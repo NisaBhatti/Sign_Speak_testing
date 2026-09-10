@@ -20,10 +20,10 @@ print("TEY (ط) SIGN DETECTION - EXCLUSIVE TRAINING")
 print("="*60)
 
 # ==================== CONFIGURATION ====================
-DATASET_PATH = r"D:\MODEL\Sign_Speak_testing-main\Simple_Dataset\Tey"
-MODEL_SAVE_PATH = r"D:\MODEL\Sign_Speak_testing-main\Exported_Model\tey_model_exclusive.tflite"
-LABEL_ENCODER_PATH = r"D:\MODEL\Sign_Speak_testing-main\Exported_Model\tey_label_encoder_exclusive.pkl"
-CONFIG_PATH = r"D:\MODEL\Sign_Speak_testing-main\Exported_Model\tey_config_exclusive.json"
+DATASET_PATH = r"Simple_Dataset\Tey"
+MODEL_SAVE_PATH = r"Exported_Model\tey_model_exclusive.tflite"
+LABEL_ENCODER_PATH = r"Exported_Model\tey_label_encoder_exclusive.pkl"
+CONFIG_PATH = r"Exported_Model\tey_config_exclusive.json"
 HISTORY_PLOT_PATH = "tey_training_history_exclusive.png"
 
 # Create directories
