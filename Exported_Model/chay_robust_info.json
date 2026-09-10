@@ -1,0 +1,31 @@
+{
+  "model": "chay_robust",
+  "sign": "چ",
+  "sign_name": "Chay",
+  "input_shape": [
+    42
+  ],
+  "input_format": "normalized (x,y) 21 landmarks",
+  "preprocessing": "wrist-centered + unit-scaled",
+  "threshold": 0.6,
+  "test_accuracy": 1.0,
+  "test_auc": 1.0,
+  "test_precision": 1.0,
+  "test_recall": 1.0,
+  "confusion_matrix": {
+    "tn": 656,
+    "fp": 0,
+    "fn": 0,
+    "tp": 328
+  },
+  "dataset_consistency": {
+    "mean_distance": 0.5262010097503662,
+    "std_distance": 0.2926565706729889,
+    "verdict": "GOOD — normal variation"
+  },
+  "n_chay_images": 40,
+  "n_valid_chay": 40,
+  "n_augmented_chay": 1640,
+  "n_negatives": 3280,
+  "mediapipe": "solutions.hands, max_num_hands=1"
+}
