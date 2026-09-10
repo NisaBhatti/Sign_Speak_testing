@@ -1,0 +1,18 @@
+{
+  "model": "hay_robust",
+  "version": 4,
+  "sign": "هـ",
+  "sign_name": "Hay",
+  "features": "42_landmarks + 5_finger_states",
+  "feature_dim": 47,
+  "normalization": "wrist_centered_scale_invariant",
+  "test_accuracy": 1.0,
+  "test_auc": 1.0,
+  "threshold": 0.3,
+  "num_hay_samples": 37,
+  "num_negative_samples": 481,
+  "input_shape": [
+    47
+  ],
+  "description": "Hay = 2 fingers open (index+middle), others closed"
+}
