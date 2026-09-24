@@ -1,0 +1,17 @@
+{
+  "model": "Tay Robust v2",
+  "letter": "ت",
+  "preprocessing": "wrist-relative + wrist->middle_MCP scale + handedness mirror",
+  "handedness_seen": {
+    "Left": 43,
+    "Right": 0
+  },
+  "test_accuracy": 1.0,
+  "test_auc": 1.0,
+  "tay_detection_rate": 100.0,
+  "threshold": 0.5,
+  "classes": [
+    "Not Tay",
+    "Tay"
+  ]
+}
