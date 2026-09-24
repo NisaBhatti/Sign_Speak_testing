@@ -1,0 +1,15 @@
+{
+  "model": "Pay Vertical-Only",
+  "letter": "پ",
+  "input": "42 MediaPipe landmarks (translation + scale normalized only)",
+  "preprocessing": "NO rotation - orientation preserved",
+  "note": "Only detects Pay when hand is VERTICAL like training image",
+  "test_accuracy": 1.0,
+  "test_auc": 1.0,
+  "pay_detection_rate": 100.0,
+  "threshold": 0.5,
+  "classes": [
+    "Not Pay",
+    "Pay"
+  ]
+}
