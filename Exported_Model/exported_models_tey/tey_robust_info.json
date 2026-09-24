@@ -1,0 +1,17 @@
+{
+  "model": "Tey Robust",
+  "letter": "ٹ",
+  "sign_description": "Closed fist with thumb extended upward (thumbs-up style)",
+  "input": "42 MediaPipe landmarks (x,y in 0-1 range)",
+  "preprocessing": "NO scaler - raw MediaPipe values directly",
+  "augmentation": "Noise, Scale, Shift, Rotation",
+  "test_accuracy": 1.0,
+  "test_auc": 1.0,
+  "tey_detection_rate": 100.0,
+  "image_size": "300x300",
+  "threshold": 0.5,
+  "classes": [
+    "Not Tey",
+    "Tey"
+  ]
+}
