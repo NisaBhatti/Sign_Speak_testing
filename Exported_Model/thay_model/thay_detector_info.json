@@ -1,0 +1,19 @@
+{
+  "model": "Thay Detector",
+  "letter": "ث",
+  "letter_name": "Thay",
+  "input": "42 MediaPipe landmarks (x,y normalized 0-1)",
+  "preprocessing": "Raw MediaPipe values, no scaler",
+  "augmentation": "Noise, Scale, Shift, Rotation",
+  "num_original_thay_samples": 92,
+  "num_augmented_thay_samples": 1196,
+  "num_negative_samples": 1980,
+  "test_accuracy": 1.0,
+  "test_auc": 1.0,
+  "thay_detection_rate": 100.0,
+  "threshold": 0.5,
+  "classes": [
+    "Not Thay",
+    "Thay"
+  ]
+}
