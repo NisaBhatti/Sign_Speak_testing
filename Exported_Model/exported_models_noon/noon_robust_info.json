@@ -1,0 +1,11 @@
+{
+  "letter": "ن",
+  "input": "42 MediaPipe landmarks (0-1)",
+  "threshold": 0.4600000000000001,
+  "test_accuracy": 0.6666666865348816,
+  "test_auc": 0.5022222399711609,
+  "noon_recall": 1.0,
+  "fp_rate": 0.96,
+  "num_noon_train": 10,
+  "num_negatives": 200
+}

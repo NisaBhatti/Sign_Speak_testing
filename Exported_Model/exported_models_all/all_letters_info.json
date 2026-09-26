@@ -1,0 +1,42 @@
+{
+  "num_classes": 10,
+  "arabic_letters": [
+    "ا",
+    "ج",
+    "ر",
+    "ز",
+    "س",
+    "ش",
+    "ع",
+    "غ",
+    "م",
+    "ن"
+  ],
+  "english_names": [
+    "Alif",
+    "Jeem",
+    "Rey",
+    "Zey",
+    "Seen",
+    "Sheen",
+    "Ain",
+    "Ghain",
+    "Meem",
+    "Noon"
+  ],
+  "input": "[x0,y0,x1,y1,...,x20,y20] MediaPipe landmarks in 0-1 range",
+  "normalization": "NONE — MediaPipe already returns 0-1",
+  "test_accuracy": 0.9627329111099243,
+  "per_class_accuracy": {
+    "ا": 97.87234042553192,
+    "ج": 100.0,
+    "ر": 100.0,
+    "ز": 100.0,
+    "س": 93.75,
+    "ش": 94.44444444444444,
+    "ع": 100.0,
+    "غ": 100.0,
+    "م": 100.0,
+    "ن": 75.0
+  }
+}
