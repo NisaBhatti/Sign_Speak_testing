@@ -1,0 +1,18 @@
+{
+  "model": "Ray Robust",
+  "letter": "ر",
+  "letter_name": "Ray",
+  "input": "42 MediaPipe landmarks (x,y pixels 0-300)",
+  "preprocessing": "divide x by 300, divide y by 300",
+  "threshold": 0.05,
+  "val_f1": 1.0,
+  "ray_samples": 180,
+  "avg_ray_confidence": 0.9999972581863403,
+  "min_ray_confidence": 0.9999872446060181,
+  "specificity": 1.0,
+  "image_size": "300x300",
+  "classes": [
+    "Not Ray",
+    "Ray"
+  ]
+}
